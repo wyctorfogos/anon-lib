@@ -1,6 +1,9 @@
 import re
 import os
 from langchain_text_splitters import RecursiveCharacterTextSplitter
+import sys
+sys.path.append("../")
+from schemas.models_schemas import AnonymizationResult
 import ollama
 
 class IntelligentAnonnimizer:
@@ -12,28 +15,15 @@ class IntelligentAnonnimizer:
         self.llm_model_name=llm_model_name
         self.llm_ipaddress_service=llm_ipaddress_service
         self.language=language
-        # A ORDEM DE DECLARAÇÃO É A PRIORIDADE: quando dois padrões casam com o mesmo
-        # valor, o primeiro declarado fica com ele. Por isso os padrões formatados
-        # (mais específicos) vêm primeiro e os numéricos "crus" (mais ambíguos) por último.
         self._patterns_by_language={
             "pt-br" : {
-                # --- Contato ---
                 "EMAIL": r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b",
-                # --- Financeiro (chave PIX aleatória = UUID v4) ---
                 "CHAVE_PIX_ALEATORIA": r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b",
-                # --- Documentos formatados ---
-                # CPF cobre as duas formas numa tag só e está declarado lá embaixo,
-                # junto dos numéricos crus: 11 dígitos sem pontuação são ambíguos e
-                # não podem ter prioridade sobre TELEFONE_BR e CNH.
                 "CNPJ_NUMERICO_FORMATADO": r"\b\d{2}\.\d{3}\.\d{3}/\d{4}-\d{2}\b",
                 "CNPJ_ALFANUMERICO": r"\b[A-Z0-9]{2}\.[A-Z0-9]{3}\.[A-Z0-9]{3}/[A-Z0-9]{4}-\d{2}\b",
                 "RG": r"\b\d{2}\.\d{3}\.\d{3}-[0-9Xx]\b",
                 "PIS_PASEP": r"\b\d{3}\.\d{5}\.\d{2}-\d\b",
-                # --- Contato / endereço ---
                 "CEP": r"(?<!\d)\d{5}-\d{3}(?!\d)",
-                # --- Outros identificadores ---
-                # Casa qualquer data dd/mm/aaaa: o regex não distingue data de
-                # nascimento de outras datas (isso exige contexto, papel do LLM).
                 "DATA_NASCIMENTO": r"\b\d{2}/\d{2}/\d{4}\b",
                 "PLACA_VEICULO_MERCOSUL": r"\b[A-Z]{3}\d[A-Z]\d{2}\b",
                 "PLACA_VEICULO": r"\b[A-Z]{3}[- ]?\d{4}\b",
@@ -41,9 +31,6 @@ class IntelligentAnonnimizer:
                 "CARTAO_CREDITO_AMEX": r"(?<!\d)3[47]\d{2}[ .-]?\d{6}[ .-]?\d{5}(?!\d)",
                 "CARTAO_CREDITO": r"(?<!\d)(?:\d{4}[ .-]?){3}\d{4}(?!\d)",
                 "IP": r"(?<!\d)(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(?!\d)",
-                # Ancorados por rótulo: o número sozinho é indistinguível de CPF/telefone,
-                # então só marcamos como CNH/agência/conta quando o rótulo está presente.
-                # O rótulo entra no trecho mascarado.
                 "CNH": r"(?i)\bCNH\s*n?[º°]?\s*:?\s*\d{11}\b",
                 "AGENCIA": r"(?i)\bag(?:[êe]ncia)?\.?\s*n?[º°]?\s*:?\s*\d{4}(?:-\d)?\b",
                 "CONTA_BANCARIA": r"(?i)\b(?:c\/c|cc|conta)\.?\s*n?[º°]?\s*:?\s*\d{4,12}-?\d?\b",
@@ -52,9 +39,6 @@ class IntelligentAnonnimizer:
                 "TITULO_ELEITOR": r"(?<!\d)\d{4}[ .]?\d{4}[ .]?\d{4}(?!\d)",
                 "CNPJ_NUMERICO": r"\b\d{14}\b",
                 "CNPJ_ALFANUMERICO_SEM_PONTUACAO": r"\b[A-Z0-9]{12}\d{2}\b",
-                # Uma única tag <CPF_n> para as duas formas: 123.456.789-00 e 12345678901.
-                # Usa (?<!\d)...(?!\d) em vez de \b no ramo sem pontuação porque \b
-                # falharia em "_12345678901" ("_" é caractere de palavra).
                 "CPF": r"\b\d{3}\.\d{3}\.\d{3}[.-]\d{2}\b|(?<!\d)\d{11}(?!\d)",
             },
             "en": {
@@ -67,6 +51,9 @@ class IntelligentAnonnimizer:
                 "US_ZIP": r"\b\d{5}(?:-\d{4})?\b"
             }
         }
+        self.list_of_undeterministics_entities = ["PERSON_NAME", "LOCATION", "ORGANIZATION", "DATE", "TIME", "MONEY", "PERCENT", "FACILITY", "GPE"]
+        self.prompt = f"Detecte e substitua informações pessoais identificáveis (PII) no texto abaixo por tags únicas. Retorne apenas o texto modificado, sem explicações adicionais.\n\n.Lista com padrões de PII para o idioma selecionado:\n{self.list_of_words_patterns()}\n\n Texto: "
+
     @property
     def list_of_words_patterns(self):
         try:
@@ -77,6 +64,7 @@ class IntelligentAnonnimizer:
             return lista_por_idioma
         except Exception as e:
             raise ValueError(f"Erro ao obter a lista de padrões: {e}")
+        
     def split_setences(self, sentence_text:str):
         try:
             text_splitter = RecursiveCharacterTextSplitter(
@@ -99,26 +87,47 @@ class IntelligentAnonnimizer:
             for pii_type, pattern in self.list_of_words_patterns.items():
                 for match in re.finditer(pattern, chunk):
                     valor=match.group(0)
-                    # Um mesmo valor pode casar com vários padrões (ex.: 11 dígitos
-                    # crus são CPF e telefone ao mesmo tempo). Vence o primeiro
-                    # padrão declarado, que é o mais específico.
                     if valor in valores_ja_capturados:
                         continue
                     valores_ja_capturados.add(valor)
                     dict_found_keywords.setdefault(pii_type, set()).add(valor)
         return dict_found_keywords
+    
+    def get_llm_response(self, prompt:str):
+        try:
+            response = ollama.chat(
+                model=self.llm_model_name,
+                prompt=prompt,
+                host=self.llm_ipaddress_service,
+                format=AnonymizationResult.model_json_format()
+            )
+            return response
+        except Exception as e:
+            raise ValueError(f"Erro ao obter resposta do LLM: {e}") from e
+        
+    def get_llm_response_text(self, text:str):
+        # Busca a resposta do LLM e retorna apenas o texto, lidando com possíveis erros.
+        self.prompt = f"Detecte e substitua informações pessoais identificáveis (PII) no texto abaixo por tags únicas. Retorne apenas o texto modificado, sem explicações adicionais.\n\n. Lista com padrões de PII para o idioma selecionado{self.llm_model_name}. Lista de entidades não determinísticas\n{self.list_of_undeterministics_entities}\n\n Texto: {text.strip()}"
+        text = self.prompt+"\n"+text.strip()
 
+        try:
+            response = self.get_llm_response(prompt=text)
+            if not response or not hasattr(response, 'text'):
+                raise ValueError("Resposta do LLM inválida ou vazia.")
+            return response.text
+        except Exception as e:
+            raise ValueError(f"Erro ao obter texto da resposta do LLM: {e}") from e
+            
     def anonimize_text(self, sentence_text:str):
         try:
             # Obtém as palavras chaves
             chuncks = self.split_setences(sentence_text=sentence_text)
             # Encontra as palavras a serem encontradas
             pii_words = self.find_keywords_and_replace(chunks_of_sentence_text=chuncks)
+            print(f"Palavras encontradas: {pii_words}")
             # Substitui as palavras encontradas por tags únicas
             dict_unique_tags={}
             for pii_type, values in pii_words.items():
-                # sorted() garante numeração de tags estável entre execuções
-                # (a ordem de iteração de um set de strings varia por processo).
                 for index, value in enumerate(sorted(values)):
                     tag=f"<{pii_type}_{index}>"
                     dict_unique_tags[tag]=value
