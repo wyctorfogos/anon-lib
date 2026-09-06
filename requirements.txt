@@ -4,3 +4,4 @@ langchain-text-splitters
 ollama
 pydantic
 pytest
+python-dotenv

@@ -1,15 +1,11 @@
+import json
 import os
 import subprocess
 import sys
+from types import SimpleNamespace
+
 import pytest
 
-# Sob o pytest, o diretório "src" entra no sys.path via `pythonpath` no pytest.ini.
-# Este bloco cobre a execução direta (python3 src/tests/test_inteligent_anon.py),
-# em que o sys.path[0] é "src/tests" e o import falharia.
-# O caminho é absoluto e derivado do __file__ de propósito: um relativo como "../"
-# seria resolvido contra o diretório de onde o comando foi chamado, não contra
-# este arquivo. E o insert(0) é necessário para que "scripts" resolva neste
-# projeto, e não no pacote homônimo instalado em site-packages.
 _SRC = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _SRC not in sys.path:
     sys.path.insert(0, _SRC)
@@ -26,73 +22,78 @@ def anon_en():
     return IntelligentAnonnimizer(language="en")
 
 
+def mascarar(anon, texto, **kwargs):
+    """anonimize_text devolve (texto_mascarado, tags); aqui interessa so o texto."""
+    return anon.anonimize_text(texto, **kwargs)[0]
+
+
 # --------------------------------------------------------------------------
 # Um caso por padrão declarado em pt-br
 # --------------------------------------------------------------------------
 CASOS_PTBR = [
-    ("Contato: joao.silva@empresa.com.br", "Contato: <EMAIL_0>"),
-    ("Pix: 550e8400-e29b-41d4-a716-446655440000", "Pix: <CHAVE_PIX_ALEATORIA_0>"),
-    ("CPF 123.345.123-45", "CPF <CPF_0>"),
-    ("CNPJ 12.345.678/0001-99", "CNPJ <CNPJ_NUMERICO_FORMATADO_0>"),
-    ("CNPJ 12.ABC.345/01DE-35", "CNPJ <CNPJ_ALFANUMERICO_0>"),
-    ("RG 12.345.678-9", "RG <RG_0>"),
-    ("PIS 123.45678.90-1", "PIS <PIS_PASEP_0>"),
-    ("CEP 01310-100", "CEP <CEP_0>"),
-    ("Nasceu em 05/09/1990", "Nasceu em <DATA_NASCIMENTO_0>"),
-    ("Placa ABC1D23", "Placa <PLACA_VEICULO_MERCOSUL_0>"),
-    ("Placa ABC-1234", "Placa <PLACA_VEICULO_0>"),
-    ("Cartao 4111 1111 1111 1111", "Cartao <CARTAO_CREDITO_0>"),
-    ("Amex 3782 822463 10005", "Amex <CARTAO_CREDITO_AMEX_0>"),
-    ("Servidor 192.168.0.14", "Servidor <IP_0>"),
-    ("Ligue (11) 98765-4321", "Ligue <TELEFONE_BR_0>"),
-    ("Ligue +55 11 98765-4321", "Ligue <TELEFONE_BR_0>"),
-    ("Ligue 1134567890", "Ligue <TELEFONE_BR_0>"),
-    ("Titulo 1234 5678 9012", "Titulo <TITULO_ELEITOR_0>"),
-    ("CNPJ 12345678000199", "CNPJ <CNPJ_NUMERICO_0>"),
-    ("CPF 12345678901", "CPF <CPF_0>"),
+    ("Contato: joao.silva@empresa.com.br", "Contato: [EMAIL_0]"),
+    ("Pix: 550e8400-e29b-41d4-a716-446655440000", "Pix: [CHAVE_PIX_ALEATORIA_0]"),
+    ("CPF 123.345.123-45", "CPF [CPF_0]"),
+    ("CNPJ 12.345.678/0001-99", "CNPJ [CNPJ_NUMERICO_FORMATADO_0]"),
+    ("CNPJ 12.ABC.345/01DE-35", "CNPJ [CNPJ_ALFANUMERICO_0]"),
+    ("RG 12.345.678-9", "RG [RG_0]"),
+    ("PIS 123.45678.90-1", "PIS [PIS_PASEP_0]"),
+    ("CEP 01310-100", "CEP [CEP_0]"),
+    ("Nasceu em 05/09/1990", "Nasceu em [DATA_NASCIMENTO_0]"),
+    ("Placa ABC1D23", "Placa [PLACA_VEICULO_MERCOSUL_0]"),
+    ("Placa ABC-1234", "Placa [PLACA_VEICULO_0]"),
+    ("Cartao 4111 1111 1111 1111", "Cartao [CARTAO_CREDITO_0]"),
+    ("Amex 3782 822463 10005", "Amex [CARTAO_CREDITO_AMEX_0]"),
+    ("Servidor 192.168.0.14", "Servidor [IP_0]"),
+    ("Ligue (11) 98765-4321", "Ligue [TELEFONE_BR_0]"),
+    ("Ligue +55 11 98765-4321", "Ligue [TELEFONE_BR_0]"),
+    ("Ligue 1134567890", "Ligue [TELEFONE_BR_0]"),
+    ("Titulo 1234 5678 9012", "Titulo [TITULO_ELEITOR_0]"),
+    ("CNPJ 12345678000199", "CNPJ [CNPJ_NUMERICO_0]"),
+    ("CPF 12345678901", "CPF [CPF_0]"),
 ]
 
 
 @pytest.mark.parametrize("texto,esperado", CASOS_PTBR)
 def test_padroes_ptbr(anon_ptbr, texto, esperado):
-    assert anon_ptbr.anonimize_text(texto) == esperado
+    assert mascarar(anon_ptbr, texto) == esperado
 
 
 CASOS_EN = [
-    ("Email me at jane.doe@example.com", "Email me at <EMAIL_0>"),
-    ("SSN 123-45-6789", "SSN <SSN_0>"),
-    ("Card 4111-1111-1111-1111", "Card <CREDIT_CARD_0>"),
-    ("Amex 3782 822463 10005", "Amex <CREDIT_CARD_AMEX_0>"),
-    ("Server 192.168.0.14", "Server <IP_0>"),
-    ("ZIP 90210", "ZIP <US_ZIP_0>"),
-    ("ZIP 90210-1234", "ZIP <US_ZIP_0>"),
+    ("Email me at jane.doe@example.com", "Email me at [EMAIL_0]"),
+    ("SSN 123-45-6789", "SSN [SSN_0]"),
+    ("Card 4111-1111-1111-1111", "Card [CREDIT_CARD_0]"),
+    ("Amex 3782 822463 10005", "Amex [CREDIT_CARD_AMEX_0]"),
+    ("Server 192.168.0.14", "Server [IP_0]"),
+    ("ZIP 90210", "ZIP [US_ZIP_0]"),
+    ("ZIP 90210-1234", "ZIP [US_ZIP_0]"),
 ]
 
 
 @pytest.mark.parametrize("texto,esperado", CASOS_EN)
 def test_padroes_en(anon_en, texto, esperado):
-    assert anon_en.anonimize_text(texto) == esperado
+    assert mascarar(anon_en, texto) == esperado
 
 
 def test_telefone_en_preserva_pontuacao_de_abertura(anon_en):
     """O \\b inicial fazia o '(' e o '+' ficarem de fora do match."""
-    assert anon_en.anonimize_text("Call (415) 555-2671 now") == "Call <US_PHONE_0> now"
-    assert anon_en.anonimize_text("Call +1-415-555-2671 now") == "Call <US_PHONE_0> now"
+    assert mascarar(anon_en, "Call (415) 555-2671 now") == "Call [US_PHONE_0] now"
+    assert mascarar(anon_en, "Call +1-415-555-2671 now") == "Call [US_PHONE_0] now"
 
 
 # --------------------------------------------------------------------------
 # Padrões ancorados por rótulo: o rótulo entra no trecho mascarado
 # --------------------------------------------------------------------------
 CASOS_COM_ROTULO = [
-    ("CNH: 12345678901", "<CNH_0>"),
-    ("Agencia 0001-2", "<AGENCIA_0>"),
-    ("conta 123456-7", "<CONTA_BANCARIA_0>"),
+    ("CNH: 12345678901", "[CNH_0]"),
+    ("Agencia 0001-2", "[AGENCIA_0]"),
+    ("conta 123456-7", "[CONTA_BANCARIA_0]"),
 ]
 
 
 @pytest.mark.parametrize("texto,esperado", CASOS_COM_ROTULO)
 def test_padroes_ancorados_por_rotulo(anon_ptbr, texto, esperado):
-    assert anon_ptbr.anonimize_text(texto) == esperado
+    assert mascarar(anon_ptbr, texto) == esperado
 
 
 # --------------------------------------------------------------------------
@@ -103,14 +104,14 @@ def test_cartao_vence_titulo_de_eleitor(anon_ptbr):
 
     Se o valor curto fosse substituído primeiro, o cartão seria corrompido.
     """
-    saida = anon_ptbr.anonimize_text("Cartao 1234 5678 9012 3456 pago hoje")
-    assert saida == "Cartao <CARTAO_CREDITO_0> pago hoje"
+    saida = mascarar(anon_ptbr, "Cartao 1234 5678 9012 3456 pago hoje")
+    assert saida == "Cartao [CARTAO_CREDITO_0] pago hoje"
 
 
 def test_cnpj_numerico_tem_prioridade_sobre_alfanumerico(anon_ptbr):
     """[A-Z0-9] também casa dígitos: o padrão numérico precisa vir antes."""
-    assert "<CNPJ_NUMERICO_FORMATADO_0>" in anon_ptbr.anonimize_text("12.345.678/0001-99")
-    assert "<CNPJ_NUMERICO_0>" in anon_ptbr.anonimize_text("12345678000199")
+    assert "[CNPJ_NUMERICO_FORMATADO_0]" in mascarar(anon_ptbr, "12.345.678/0001-99")
+    assert "[CNPJ_NUMERICO_0]" in mascarar(anon_ptbr, "12345678000199")
 
 
 def test_sem_chaves_duplicadas_no_dicionario_de_padroes():
@@ -141,23 +142,23 @@ def test_sem_chaves_duplicadas_no_dicionario_de_padroes():
 
 
 def test_cpf_cobre_as_duas_formas_com_a_mesma_tag(anon_ptbr):
-    assert anon_ptbr.anonimize_text("CPF 123.456.789-00") == "CPF <CPF_0>"
-    assert anon_ptbr.anonimize_text("CPF 12345678901") == "CPF <CPF_0>"
+    assert mascarar(anon_ptbr, "CPF 123.456.789-00") == "CPF [CPF_0]"
+    assert mascarar(anon_ptbr, "CPF 12345678901") == "CPF [CPF_0]"
 
 
 def test_telefone_tem_prioridade_sobre_cpf_sem_pontuacao(anon_ptbr):
     """11 dígitos crus são ambíguos; o padrão de celular é o mais específico."""
-    assert anon_ptbr.anonimize_text("Ligue 11987654321") == "Ligue <TELEFONE_BR_0>"
+    assert mascarar(anon_ptbr, "Ligue 11987654321") == "Ligue [TELEFONE_BR_0]"
 
 
 def test_dotted_quad_invalido_como_ip_cai_em_cpf(anon_ptbr):
     """345 > 255, então não é IP; o CPF com separador tolerante pega."""
-    assert anon_ptbr.anonimize_text("Doc 123.345.123.45") == "Doc <CPF_0>"
+    assert mascarar(anon_ptbr, "Doc 123.345.123.45") == "Doc [CPF_0]"
 
 
 def test_valor_curto_contido_em_valor_longo_nao_vaza_isolado(anon_ptbr):
     """O número da CNH rotulada também aparece solto: as duas ocorrências somem."""
-    saida = anon_ptbr.anonimize_text("CNH: 12345678901 e de novo 12345678901 aqui")
+    saida = mascarar(anon_ptbr, "CNH: 12345678901 e de novo 12345678901 aqui")
     assert "12345678901" not in saida
 
 
@@ -171,7 +172,7 @@ def test_pii_na_fronteira_entre_chunks(anon_ptbr, alvo):
     for n in range(940, 1060):
         filler = ("palavra teste do documento. " * 200)[:n]
         texto = f"{filler} {alvo} fim do documento."
-        if alvo in anon_ptbr.anonimize_text(texto):
+        if alvo in mascarar(anon_ptbr, texto):
             vazamentos.append(n)
     assert vazamentos == []
 
@@ -181,18 +182,18 @@ def test_pii_na_fronteira_entre_chunks(anon_ptbr, alvo):
 # --------------------------------------------------------------------------
 def test_texto_sem_pii_fica_intacto(anon_ptbr):
     texto = "Reuniao marcada para a sala 3 do predio azul."
-    assert anon_ptbr.anonimize_text(texto) == texto
+    assert mascarar(anon_ptbr, texto) == texto
 
 
 def test_multiplos_valores_do_mesmo_tipo_recebem_tags_distintas(anon_ptbr):
-    saida = anon_ptbr.anonimize_text("CPF 111.222.333-44 e CPF 555.666.777-88")
-    assert saida == "CPF <CPF_0> e CPF <CPF_1>"
+    saida = mascarar(anon_ptbr, "CPF 111.222.333-44 e CPF 555.666.777-88")
+    assert saida == "CPF [CPF_0] e CPF [CPF_1]"
 
 
 def test_idioma_nao_suportado(anon_ptbr):
     anon = IntelligentAnonnimizer(language="fr")
     with pytest.raises(ValueError, match="não suportado"):
-        anon.anonimize_text("texto qualquer")
+        mascarar(anon, "texto qualquer")
 
 
 @pytest.mark.parametrize("entrada", [None, []])
@@ -223,6 +224,108 @@ def test_numeracao_de_tags_estavel_entre_processos():
         )
         saidas.add(resultado.stdout.strip())
     assert len(saidas) == 1, f"numeracao instavel entre processos: {saidas}"
+
+
+# --------------------------------------------------------------------------
+# Caminho LLM (sem rede: a resposta do ollama é substituída por um stub)
+# --------------------------------------------------------------------------
+def _resposta_falsa(payload):
+    """Imita o ChatResponse do ollama: o conteúdo fica em message.content."""
+    return SimpleNamespace(message=SimpleNamespace(content=json.dumps(payload)))
+
+
+def test_llm_descarta_valor_que_nao_existe_no_texto(anon_ptbr, monkeypatch):
+    """Valor alucinado/parafraseado viraria um re.sub inócuo, fingindo anonimizar."""
+    texto = "Meu nome é Maria e moro em Vitoria."
+    monkeypatch.setattr(
+        anon_ptbr, "get_llm_response",
+        lambda prompt, format_schema=None: _resposta_falsa({"anon_model_output": [
+            {"tipo": "PERSON_NAME", "valor": "Maria"},
+            {"tipo": "PERSON_NAME", "valor": "Mariazinha"},   # não está no texto
+            {"tipo": "LOCATION", "valor": "Vitoria"},
+        ]}),
+    )
+    entidades = anon_ptbr.find_undeterministic_entities(texto)
+    assert entidades == {"PERSON_NAME": {"Maria"}, "LOCATION": {"Vitoria"}}
+
+
+def test_llm_preserva_duas_entidades_do_mesmo_tipo(anon_ptbr, monkeypatch):
+    """O motivo de a saída ser lista, e não dict: dict perderia um dos nomes."""
+    texto = "Maria é filha de Joshua Smith."
+    monkeypatch.setattr(
+        anon_ptbr, "get_llm_response",
+        lambda prompt, format_schema=None: _resposta_falsa({"anon_model_output": [
+            {"tipo": "PERSON_NAME", "valor": "Maria"},
+            {"tipo": "PERSON_NAME", "valor": "Joshua Smith"},
+        ]}),
+    )
+    saida = mascarar(anon_ptbr, texto, use_llm=True)
+    assert saida == "[PERSON_NAME_1] é filha de [PERSON_NAME_0]."
+
+
+def test_regex_tem_prioridade_sobre_o_llm(anon_ptbr, monkeypatch):
+    """Se os dois acharem o mesmo valor, ele não pode receber duas tags."""
+    texto = "O CPF 123.345.123-45 é da Maria."
+    monkeypatch.setattr(
+        anon_ptbr, "get_llm_response",
+        lambda prompt, format_schema=None: _resposta_falsa({"anon_model_output": [
+            {"tipo": "PERSON_NAME", "valor": "Maria"},
+            {"tipo": "MONEY", "valor": "123.345.123-45"},   # o regex já pegou
+        ]}),
+    )
+    saida = mascarar(anon_ptbr, texto, use_llm=True)
+    assert saida == "O CPF [CPF_0] é da [PERSON_NAME_0]."
+    assert "MONEY" not in saida
+
+
+def test_llm_nao_duplica_tag_de_valor_sobreposto_ao_regex(anon_ptbr, monkeypatch):
+    """O LLM devolve o telefone com o "+"; o regex capturou sem ele.
+
+    As strings diferem, então a deduplicação por igualdade deixava passar e o
+    mesmo telefone acabava com duas tags, uma delas órfã (no dict, fora do texto).
+    """
+    texto = "Meu celular é +2799778-5677."
+    monkeypatch.setattr(
+        anon_ptbr, "get_llm_response",
+        lambda prompt, format_schema=None: _resposta_falsa({"anon_model_output": [
+            {"tipo": "PERSON_NAME", "valor": "+2799778-5677"},
+        ]}),
+    )
+    masked, tags = anon_ptbr.anonimize_text(texto, use_llm=True)
+    assert list(tags) == ["[TELEFONE_BR_0]"]
+    assert "PERSON_NAME" not in masked
+
+
+def test_tags_devolvidas_existem_todas_no_texto(anon_ptbr, monkeypatch):
+    """Tag órfã no mapa inviabiliza desanonimizar depois."""
+    texto = "CNH: 12345678901 e Maria."
+    monkeypatch.setattr(
+        anon_ptbr, "get_llm_response",
+        lambda prompt, format_schema=None: _resposta_falsa({"anon_model_output": [
+            {"tipo": "PERSON_NAME", "valor": "Maria"},
+        ]}),
+    )
+    masked, tags = anon_ptbr.anonimize_text(texto, use_llm=True)
+    assert all(tag in masked for tag in tags), f"tags fora do texto: {tags}"
+
+
+def test_llm_rejeita_json_fora_do_schema(anon_ptbr, monkeypatch):
+    monkeypatch.setattr(
+        anon_ptbr, "get_llm_response",
+        lambda prompt, format_schema=None: _resposta_falsa({"resposta": "qualquer coisa"}),
+    )
+    with pytest.raises(ValueError, match="não bate com o schema"):
+        anon_ptbr.find_undeterministic_entities("Maria")
+
+
+def test_anonimize_text_sem_llm_nao_toca_a_rede(anon_ptbr, monkeypatch):
+    """use_llm=False é o default: a suíte inteira roda sem servidor."""
+    def explode(*args, **kwargs):
+        raise AssertionError("get_llm_response nao deveria ser chamado")
+
+    monkeypatch.setattr(anon_ptbr, "get_llm_response", explode)
+    assert mascarar(anon_ptbr, "CPF 123.345.123-45") == "CPF [CPF_0]"
+
 
 
 if __name__ == "__main__":
