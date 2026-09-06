@@ -1,0 +1,6 @@
+faker
+pandas
+langchain-text-splitters
+ollama
+pydantic
+pytest
