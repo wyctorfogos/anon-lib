@@ -46,4 +46,4 @@ path = "src/anon_lib/__init__.py"
 packages = ["src/anon_lib"]
 
 [tool.hatch.build.targets.sdist]
-include = ["/src/anon_lib", "/tests", "/README.md", "/LICENSE"]
+include = ["/src/anon_lib", "/tests", "/README.md", "/LICENSE", "/pytest.ini"]
