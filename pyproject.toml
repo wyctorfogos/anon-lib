@@ -7,7 +7,7 @@ name = "anon-lib"
 dynamic = ["version"]                 # fonte unica: __version__ em src/anon_lib/__init__.py
 description = "PII detection and masking for Brazilian Portuguese and English"
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.8.13"
 license = "MIT"
 license-files = ["LICENSE"]
 authors = [{name = "Wyctor Fogos da Rocha"}]
