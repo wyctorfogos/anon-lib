@@ -25,7 +25,7 @@ class IntelligentAnonnimizer:
                 "RG": r"\b\d{2}\.\d{3}\.\d{3}-[0-9Xx]\b",
                 "PIS_PASEP": r"\b\d{3}\.\d{5}\.\d{2}-\d\b",
                 "CEP": r"(?<!\d)\d{5}-\d{3}(?!\d)",
-                "DATA_NASCIMENTO": r"\b\d{2}/\d{2}/\d{4}\b",
+                "DATA": r"\b\d{2}/\d{2}/\d{4}\b",
                 "PLACA_VEICULO_MERCOSUL": r"\b[A-Z]{3}\d[A-Z]\d{2}\b",
                 "PLACA_VEICULO": r"\b[A-Z]{3}[- ]?\d{4}\b",
                 # --- Financeiro ---
@@ -52,19 +52,24 @@ class IntelligentAnonnimizer:
                 "US_ZIP": r"\b\d{5}(?:-\d{4})?\b"
             }
         }
-        self.list_of_undeterministics_entities = ["PERSON_NAME", "LOCATION", "ORGANIZATION", "DATE", "TIME", "MONEY", "PERCENT", "FACILITY", "GPE"]
-        # Preâmbulo do prompt. Não interpola list_of_words_patterns aqui: é uma
-        # property que depende do idioma e levantaria erro já na construção do
-        # objeto. A composição com os tipos e o texto fica em
-        # find_undeterministic_entities, que também junta os nomes dos padrões
-        # (só os nomes: mandar os regexes inteiros gasta tokens e não ajuda o modelo).
+        self.list_of_undeterministics_entities = [
+            "PERSON_NAME", "LOCATION", "ORGANIZATION", 
+            "DATE", "AGE",  # ← adiciona AGE
+            "TIME", "MONEY", "PERCENT", "FACILITY", "GPE"
+        ]
+
         self.prompt = (
             "Você é um detector de dados pessoais (PII). Devolva as entidades "
             "encontradas no texto em JSON, seguindo o schema pedido.\n"
             "Regras:\n"
             "- Copie cada valor exatamente como aparece no texto, sem reescrever.\n"
             "- Não devolva o texto mascarado: quem mascara é o código.\n"
-            "- Se não houver nenhuma entidade, devolva uma lista vazia."
+            "- Se não houver nenhuma entidade, devolva uma lista vazia.\n"
+            "- Capture TODOS os nomes de pessoas, incluindo terceiros mencionados "
+            "por vínculo familiar, profissional ou social "
+            "(ex: 'pai de', 'filha de', 'cônjuge de', 'advogado de').\n"
+            "- Capture idades expressas como número seguido de 'anos' "
+            "(ex: '35 anos', 'com 12 anos') como entidade do tipo AGE."
         )
 
     @property
@@ -81,7 +86,7 @@ class IntelligentAnonnimizer:
     def split_setences(self, sentence_text:str):
         try:
             text_splitter = RecursiveCharacterTextSplitter(
-                separators=["\n\n", "\n", ".", " ", ""],  # Paragraph → Line → Sentence → Word → Character
+                separators=["\n\n", "\n", ".", " ", ""],
                 chunk_size=1000,
                 # por valor em find_keywords_and_replace.
                 chunk_overlap=50
@@ -127,17 +132,13 @@ class IntelligentAnonnimizer:
             f"{', '.join(self.list_of_words_patterns)}\n\n"
             f"Texto:\n{sentence_text.strip()}"
         )
-        # Restringe o campo 'tipo' aos tipos pedidos. Sem isso o modelo inventa
-        # tipos fora da lista (já devolveu um "PHONE", justamente o que o prompt
-        # mandava ignorar): 'tipo' é str livre no schema, então nada o impedia.
-        # O enum é imposto pela decodificação estruturada, não só pedido no texto.
+
         schema = copy.deepcopy(AnonOutput.model_json_schema())
         schema["$defs"]["PIIEntity"]["properties"]["tipo"]["enum"] = list(
             self.list_of_undeterministics_entities
         )
         response = self.get_llm_response(prompt=prompt, format_schema=schema)
 
-        # O conteúdo está em message.content: ChatResponse não tem atributo .text.
         conteudo = getattr(response.message, "content", None)
         if not conteudo:
             raise ValueError("Resposta do LLM veio vazia.")
@@ -152,41 +153,26 @@ class IntelligentAnonnimizer:
                 entidades.setdefault(entidade.tipo, set()).add(entidade.valor)
         return entidades
             
-    def anonimize_text(self, sentence_text:str, use_llm:bool=False):
-        try:
-            # Obtém as palavras chaves
-            chuncks = self.split_setences(sentence_text=sentence_text)
-            pii_words = self.find_keywords_and_replace(chunks_of_sentence_text=chuncks)
+    def anonimize_text(self, sentence_text: str, use_llm: bool = False):
+        chunks = self.split_setences(sentence_text=sentence_text)
+        pii_words = self.find_keywords_and_replace(chunks_of_sentence_text=chunks)
 
-            if use_llm:
-                ja_capturados={v for valores in pii_words.values() for v in valores}
-                for tipo, valores in self.find_undeterministic_entities(sentence_text).items():
-                    # Comparar por igualdade não basta: o LLM devolve o mesmo dado
-                    # com uma borda a mais ou a menos ("+2799778-5677" contra o
-                    # "2799778-5677" do regex). Como as strings diferem, o valor
-                    # passava e o mesmo telefone ganhava duas tags. Descarta quem
-                    # se sobrepõe a um valor do regex, nos dois sentidos.
-                    novos={
-                        v for v in valores
-                        if not any(v in j or j in v for j in ja_capturados)
-                    }
-                    if novos:
-                        pii_words.setdefault(tipo, set()).update(novos)
+        if use_llm:
+            ja_capturados = {v for valores in pii_words.values() for v in valores}
+            for tipo, valores in self.find_undeterministic_entities(sentence_text).items():
+                novos = {v for v in valores
+                        if not any(v in j or j in v for j in ja_capturados)}
+                if novos:
+                    pii_words.setdefault(tipo, set()).update(novos)
 
-            dict_unique_tags={}
-            for pii_type, values in pii_words.items():
-                for index, value in enumerate(sorted(values)):
-                    tag=f"[{pii_type}_{index}]"
-                    dict_unique_tags[tag]=value
-            masked_text=sentence_text
-            for tag, original_value in sorted(dict_unique_tags.items(), key=lambda item: len(item[1]), reverse=True):
-                masked_text=re.sub(pattern=re.escape(original_value), repl=tag, string=masked_text)
-            # Uma tag cujo valor foi engolido por outro maior nunca chega ao texto.
-            # Devolvê-la no mapa sugeriria uma substituição que não existe, e
-            # quebraria qualquer tentativa de desanonimizar a partir daqui.
-            dict_unique_tags={
-                tag: valor for tag, valor in dict_unique_tags.items() if tag in masked_text
-            }
-            return masked_text, dict_unique_tags
-        except Exception as e:
-            raise ValueError(f"Erro ao anonimizar a sentença: {e}") from e
+        tags = {
+            f"[{tipo}_{i}]": valor
+            for tipo, valores in pii_words.items()
+            for i, valor in enumerate(sorted(valores))
+        }
+
+        masked_text = sentence_text
+        for tag, valor in sorted(tags.items(), key=lambda kv: len(kv[1]), reverse=True):
+            masked_text = masked_text.replace(valor, tag)
+
+        return masked_text, {t: v for t, v in tags.items() if t in masked_text}

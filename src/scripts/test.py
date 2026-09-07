@@ -21,7 +21,7 @@ if __name__ == "__main__":
     print(anon.anonimize_text(sentence_text=teste))
 
     # 2) Regex + LLM: o LLM só acrescenta o que o regex não alcança (nome, idade).
-    teste2 = ("Meu nome é Maria, tenho 35 anos, sou filha de Joshua Smith "
+    teste2 = ("José Carlos foi assaltado no dia 20/12/2023 e não foi à delegacia em Camburi, de frente à Torre azul B. Ele tinha 35 anos, sou filha de Joshua Smith "
               "e meu CPF é 111.222.333-44. Moro na Rua das Flores, 123, e meu celular é +2799778-5677.")
     print("\n== regex + llm ==")
     try:
