@@ -1,2 +1,14 @@
-*.pyc
+__pycache__/
+*.py[cod]
+
+# distribuicao
+build/
+dist/
+*.egg-info/
+
+# ambiente e cache
+.venv/
+venv/
+.pytest_cache/
+config/.env
 */.env

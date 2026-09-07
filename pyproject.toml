@@ -1,0 +1,49 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "anon-lib"
+dynamic = ["version"]                 # fonte unica: __version__ em src/anon_lib/__init__.py
+description = "PII detection and masking for Brazilian Portuguese and English"
+readme = "README.md"
+requires-python = ">=3.9"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{name = "Wyctor Fogos da Rocha"}]
+keywords = ["pii", "anonymization", "lgpd", "portuguese", "ner"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Natural Language :: Portuguese (Brazilian)",
+    "Natural Language :: English",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Text Processing :: Linguistic",
+    "Topic :: Security",
+]
+
+# Importado no topo de anonymizer.py, entao e obrigatorio: sem ele o
+# pacote instala e quebra no import.
+dependencies = ["langchain-text-splitters>=0.2"]
+
+[project.optional-dependencies]
+# Carregados sob demanda em Anonymizer._require_llm(), so no modo use_llm=True.
+llm = ["ollama>=0.3", "pydantic>=2"]
+dev = ["pytest>=7", "python-dotenv", "anon-lib[llm]"]
+
+[project.urls]
+Homepage = "https://github.com/wyctorfogos/anon-lib"
+Issues = "https://github.com/wyctorfogos/anon-lib/issues"
+
+[tool.hatch.version]
+path = "src/anon_lib/__init__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/anon_lib"]
+
+[tool.hatch.build.targets.sdist]
+include = ["/src/anon_lib", "/tests", "/README.md", "/LICENSE"]

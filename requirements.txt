@@ -1,7 +1,4 @@
-faker
-pandas
-langchain-text-splitters
-ollama
-pydantic
-pytest
-python-dotenv
+# Dependencias declaradas no pyproject.toml. Para desenvolver:
+#     pip install -e ".[dev]"
+# Este arquivo existe so por conveniencia e espelha o extra [dev].
+-e .[dev]

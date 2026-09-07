@@ -10,16 +10,16 @@ _SRC = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _SRC not in sys.path:
     sys.path.insert(0, _SRC)
 
-from scripts.models.inteligent_anon import IntelligentAnonnimizer
+from anon_lib.inteligent_anon import Anonymizer
 
 @pytest.fixture(scope="module")
 def anon_ptbr():
-    return IntelligentAnonnimizer(language="pt-br")
+    return Anonymizer(language="pt-br")
 
 
 @pytest.fixture(scope="module")
 def anon_en():
-    return IntelligentAnonnimizer(language="en")
+    return Anonymizer(language="en")
 
 
 def mascarar(anon, texto, **kwargs):
@@ -39,7 +39,7 @@ CASOS_PTBR = [
     ("RG 12.345.678-9", "RG [RG_0]"),
     ("PIS 123.45678.90-1", "PIS [PIS_PASEP_0]"),
     ("CEP 01310-100", "CEP [CEP_0]"),
-    ("Nasceu em 05/09/1990", "Nasceu em [DATA_NASCIMENTO_0]"),
+    ("Nasceu em 05/09/1990", "Nasceu em [DATA_0]"),
     ("Placa ABC1D23", "Placa [PLACA_VEICULO_MERCOSUL_0]"),
     ("Placa ABC-1234", "Placa [PLACA_VEICULO_0]"),
     ("Cartao 4111 1111 1111 1111", "Cartao [CARTAO_CREDITO_0]"),
@@ -123,20 +123,26 @@ def test_sem_chaves_duplicadas_no_dicionario_de_padroes():
     """
     import ast
 
-    from scripts.models import inteligent_anon
+    import anon_lib.models
+    from anon_lib import inteligent_anon
 
-    with open(inteligent_anon.__file__, encoding="utf-8") as arquivo:
-        arvore = ast.parse(arquivo.read())
-
+    # Varre os dois: o dicionário de padrões mora no __init__.py do pacote, e a
+    # lógica no inteligent_anon.py. Olhar só um deixaria o outro desprotegido.
     duplicadas = []
-    for no in ast.walk(arvore):
-        if not isinstance(no, ast.Dict):
-            continue
-        chaves = [
-            k.value for k in no.keys
-            if isinstance(k, ast.Constant) and isinstance(k.value, str)
-        ]
-        duplicadas += sorted({c for c in chaves if chaves.count(c) > 1})
+    for modulo in (anon_lib.models, inteligent_anon):
+        with open(modulo.__file__, encoding="utf-8") as arquivo:
+            arvore = ast.parse(arquivo.read())
+        for no in ast.walk(arvore):
+            if not isinstance(no, ast.Dict):
+                continue
+            chaves = [
+                k.value for k in no.keys
+                if isinstance(k, ast.Constant) and isinstance(k.value, str)
+            ]
+            duplicadas += sorted({
+                f"{os.path.basename(modulo.__file__)}:{c}"
+                for c in chaves if chaves.count(c) > 1
+            })
 
     assert duplicadas == [], f"chaves duplicadas apagam padroes: {duplicadas}"
 
@@ -191,7 +197,7 @@ def test_multiplos_valores_do_mesmo_tipo_recebem_tags_distintas(anon_ptbr):
 
 
 def test_idioma_nao_suportado(anon_ptbr):
-    anon = IntelligentAnonnimizer(language="fr")
+    anon = Anonymizer(language="fr")
     with pytest.raises(ValueError, match="não suportado"):
         mascarar(anon, "texto qualquer")
 
@@ -205,8 +211,8 @@ def test_find_keywords_sem_conteudo(anon_ptbr, entrada):
 def test_numeracao_de_tags_estavel_entre_processos():
     """Iterar um set de strings varia com o PYTHONHASHSEED; sorted() estabiliza."""
     script = (
-        "from scripts.models.inteligent_anon import IntelligentAnonnimizer;"
-        "print(IntelligentAnonnimizer(language='pt-br').anonimize_text("
+        "from scripts.models.inteligent_anon import Anonymizer;"
+        "print(Anonymizer(language='pt-br').anonimize_text("
         "'CPF 111.222.333-44, CPF 555.666.777-88, CPF 999.888.777-66'))"
     )
     # Herda o sys.path deste processo em vez de embutir um caminho relativo,
@@ -325,6 +331,69 @@ def test_anonimize_text_sem_llm_nao_toca_a_rede(anon_ptbr, monkeypatch):
 
     monkeypatch.setattr(anon_ptbr, "get_llm_response", explode)
     assert mascarar(anon_ptbr, "CPF 123.345.123-45") == "CPF [CPF_0]"
+
+
+# --------------------------------------------------------------------------
+# Regressão de PROMPT — chamadas reais ao Ollama.
+#
+# Ficam fora da suíte padrão (pytest.ini desmarca "llm") porque dependem de
+# servidor e de um modelo, e porque a saída de um LLM não é garantida nem com
+# temperature=0. Rode-os de propósito ao mexer no prompt:
+#
+#     python3 -m pytest -m llm
+#
+# Stub não serviria aqui: o que se quer verificar é justamente se as regras do
+# prompt continuam surtindo efeito no modelo.
+# --------------------------------------------------------------------------
+@pytest.fixture(scope="module")
+def anon_llm():
+    from dotenv import load_dotenv
+
+    load_dotenv(os.path.join(os.path.dirname(_SRC), "config", ".env"))
+    modelo = os.getenv("LLM_MODEL_NAME")
+    anon = Anonymizer(**({"llm_model_name": modelo} if modelo else {}))
+    try:
+        anon._llm_client.show(anon.llm_model_name)
+    except Exception as e:
+        pytest.skip(f"Ollama indisponivel ou modelo ausente: {e}")
+    return anon
+
+
+@pytest.mark.llm
+def test_llm_captura_pessoa_citada_por_vinculo_familiar(anon_llm):
+    """Regra do prompt: terceiros mencionados por vínculo ('filha de X').
+
+    Antes da regra, o modelo devolvia só a pessoa que fala e o Joshua Smith
+    passava batido — ou vinha rotulado como ORGANIZATION.
+    """
+    texto = "Ele tinha 35 anos, sou filha de Joshua Smith e meu CPF é 111.222.333-44."
+    masked, tags = anon_llm.anonimize_text(texto, use_llm=True)
+    assert "Joshua Smith" not in masked
+    assert "Joshua Smith" in tags.values()
+
+
+@pytest.mark.llm
+def test_llm_captura_idade_como_age(anon_llm):
+    """Regra do prompt: '<numero> anos' é AGE.
+
+    Sem AGE na lista de entidades, '35 anos' caía em DATE.
+    """
+    masked, tags = anon_llm.anonimize_text("Ele tinha 35 anos.", use_llm=True)
+    assert "35 anos" not in masked
+    assert any(tag.startswith("[AGE_") for tag in tags), tags
+
+
+@pytest.mark.llm
+def test_llm_captura_nome_solto_sem_vinculo(anon_llm):
+    """Contraprova da regra de vínculo: nome sem parentesco declarado.
+
+    A regra fala em 'pai de', 'filha de'; era preciso confirmar que ela não
+    estreitou o modelo a ponto de ignorar um nome solto.
+    """
+    texto = "Meu cpf é 123.345.123-45, o Carlos é amigo de todos."
+    masked, tags = anon_llm.anonimize_text(texto, use_llm=True)
+    assert "Carlos" not in masked
+    assert "Carlos" in tags.values()
 
 
 

@@ -2,11 +2,9 @@ import re
 import os
 import copy
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-import ollama
+from anon_lib.patterns.patterns import _patterns_by_language
 
-from scripts.schemas.models_schemas import AnonOutput
-
-class IntelligentAnonnimizer:
+class Anonymizer:
     def __init__(self,
             llm_model_name:str="hf.co/empero-ai/Qwen3.8-4B-Distill-GGUF:Q4_K_M",
             llm_ipaddress_service:str="http://localhost:11434",
@@ -14,47 +12,12 @@ class IntelligentAnonnimizer:
         ):
         self.llm_model_name=llm_model_name
         self.llm_ipaddress_service=llm_ipaddress_service
-        self._llm_client=ollama.Client(host=self.llm_ipaddress_service)
+        self._llm_client=None  # criado sob demanda; veja _require_llm()
         self.language=language
-        self._patterns_by_language={
-            "pt-br" : {
-                "EMAIL": r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b",
-                "CHAVE_PIX_ALEATORIA": r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b",
-                "CNPJ_NUMERICO_FORMATADO": r"\b\d{2}\.\d{3}\.\d{3}/\d{4}-\d{2}\b",
-                "CNPJ_ALFANUMERICO": r"\b[A-Z0-9]{2}\.[A-Z0-9]{3}\.[A-Z0-9]{3}/[A-Z0-9]{4}-\d{2}\b",
-                "RG": r"\b\d{2}\.\d{3}\.\d{3}-[0-9Xx]\b",
-                "PIS_PASEP": r"\b\d{3}\.\d{5}\.\d{2}-\d\b",
-                "CEP": r"(?<!\d)\d{5}-\d{3}(?!\d)",
-                "DATA": r"\b\d{2}/\d{2}/\d{4}\b",
-                "PLACA_VEICULO_MERCOSUL": r"\b[A-Z]{3}\d[A-Z]\d{2}\b",
-                "PLACA_VEICULO": r"\b[A-Z]{3}[- ]?\d{4}\b",
-                # --- Financeiro ---
-                "CARTAO_CREDITO_AMEX": r"(?<!\d)3[47]\d{2}[ .-]?\d{6}[ .-]?\d{5}(?!\d)",
-                "CARTAO_CREDITO": r"(?<!\d)(?:\d{4}[ .-]?){3}\d{4}(?!\d)",
-                "IP": r"(?<!\d)(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(?!\d)",
-                "CNH": r"(?i)\bCNH\s*n?[º°]?\s*:?\s*\d{11}\b",
-                "AGENCIA": r"(?i)\bag(?:[êe]ncia)?\.?\s*n?[º°]?\s*:?\s*\d{4}(?:-\d)?\b",
-                "CONTA_BANCARIA": r"(?i)\b(?:c\/c|cc|conta)\.?\s*n?[º°]?\s*:?\s*\d{4,12}-?\d?\b",
-                # --- Numéricos crus (mais ambíguos, por último) ---
-                "TELEFONE_BR": r"(?<!\d)(?:\+55[-. ]?)?\(?\d{2}\)?[-. ]?9?\d{4}[-. ]?\d{4}(?!\d)",
-                "TITULO_ELEITOR": r"(?<!\d)\d{4}[ .]?\d{4}[ .]?\d{4}(?!\d)",
-                "CNPJ_NUMERICO": r"\b\d{14}\b",
-                "CNPJ_ALFANUMERICO_SEM_PONTUACAO": r"\b[A-Z0-9]{12}\d{2}\b",
-                "CPF": r"\b\d{3}\.\d{3}\.\d{3}[.-]\d{2}\b|(?<!\d)\d{11}(?!\d)",
-            },
-            "en": {
-                "EMAIL": r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b",
-                "SSN": r"(?<!\d)\d{3}-\d{2}-\d{4}(?!\d)",
-                "CREDIT_CARD_AMEX": r"(?<!\d)3[47]\d{2}[ .-]?\d{6}[ .-]?\d{5}(?!\d)",
-                "CREDIT_CARD": r"(?<!\d)(?:\d{4}[ .-]?){3}\d{4}(?!\d)",
-                "IP": r"(?<!\d)(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(?!\d)",
-                "US_PHONE": r"(?<!\d)(?:\+?1[-.]?)?\(?([0-9]{3})\)?[-. ]?([0-9]{3})[-. ]?([0-9]{4})(?!\d)",
-                "US_ZIP": r"\b\d{5}(?:-\d{4})?\b"
-            }
-        }
+        self._patterns_by_language=_patterns_by_language
         self.list_of_undeterministics_entities = [
             "PERSON_NAME", "LOCATION", "ORGANIZATION", 
-            "DATE", "AGE",  # ← adiciona AGE
+            "DATE", "AGE",
             "TIME", "MONEY", "PERCENT", "FACILITY", "GPE"
         ]
 
@@ -72,6 +35,24 @@ class IntelligentAnonnimizer:
             "(ex: '35 anos', 'com 12 anos') como entidade do tipo AGE."
         )
 
+    def _require_llm(self):
+        """Carrega as dependencias opcionais do modo LLM e devolve (client, schema).
+
+        Erro de import vira mensagem acionavel: sem isso o usuario receberia um
+        ModuleNotFoundError cru, sem pista de que existe um extra a instalar.
+        """
+        try:
+            import ollama
+            from anon_lib.schemas.models_schemas import AnonOutput
+        except ImportError as e:
+            raise ImportError(
+                "use_llm=True requer as dependencias opcionais do modo LLM: "
+                "pip install anon-lib[llm]"
+            ) from e
+        if self._llm_client is None:
+            self._llm_client = ollama.Client(host=self.llm_ipaddress_service)
+        return self._llm_client, AnonOutput
+
     @property
     def list_of_words_patterns(self):
         try:
@@ -88,8 +69,7 @@ class IntelligentAnonnimizer:
             text_splitter = RecursiveCharacterTextSplitter(
                 separators=["\n\n", "\n", ".", " ", ""],
                 chunk_size=1000,
-                # por valor em find_keywords_and_replace.
-                chunk_overlap=50
+                chunk_overlap=100
             )
             return text_splitter.split_text(sentence_text)
         except Exception as e:
@@ -112,8 +92,9 @@ class IntelligentAnonnimizer:
         return dict_found_keywords
     
     def get_llm_response(self, prompt:str, format_schema:dict=None):
+        client, AnonOutput = self._require_llm()
         try:
-            response = self._llm_client.chat(
+            response = client.chat(
                 model=self.llm_model_name,
                 messages=[{"role": "user", "content": prompt}],
                 format=format_schema or AnonOutput.model_json_schema(),
@@ -133,6 +114,7 @@ class IntelligentAnonnimizer:
             f"Texto:\n{sentence_text.strip()}"
         )
 
+        _, AnonOutput = self._require_llm()
         schema = copy.deepcopy(AnonOutput.model_json_schema())
         schema["$defs"]["PIIEntity"]["properties"]["tipo"]["enum"] = list(
             self.list_of_undeterministics_entities
