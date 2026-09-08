@@ -3,6 +3,8 @@ import os
 import copy
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from anon_lib.patterns.patterns import _patterns_by_language
+import ollama
+from anon_lib.schemas.models_schemas import AnonOutput
 
 class Anonymizer:
     def __init__(self,
@@ -12,7 +14,7 @@ class Anonymizer:
         ):
         self.llm_model_name=llm_model_name
         self.llm_ipaddress_service=llm_ipaddress_service
-        self._llm_client=None  # criado sob demanda; veja _require_llm()
+        self._llm_client = ollama.Client(host=self.llm_ipaddress_service)
         self.language=language
         self._patterns_by_language=_patterns_by_language
         self.list_of_undeterministics_entities = [
@@ -34,24 +36,6 @@ class Anonymizer:
             "- Capture idades expressas como número seguido de 'anos' "
             "(ex: '35 anos', 'com 12 anos') como entidade do tipo AGE."
         )
-
-    def _require_llm(self):
-        """Carrega as dependencias opcionais do modo LLM e devolve (client, schema).
-
-        Erro de import vira mensagem acionavel: sem isso o usuario receberia um
-        ModuleNotFoundError cru, sem pista de que existe um extra a instalar.
-        """
-        try:
-            import ollama
-            from anon_lib.schemas.models_schemas import AnonOutput
-        except ImportError as e:
-            raise ImportError(
-                "use_llm=True requer as dependencias opcionais do modo LLM: "
-                "pip install anon-lib[llm]"
-            ) from e
-        if self._llm_client is None:
-            self._llm_client = ollama.Client(host=self.llm_ipaddress_service)
-        return self._llm_client, AnonOutput
 
     @property
     def list_of_words_patterns(self):
@@ -92,9 +76,8 @@ class Anonymizer:
         return dict_found_keywords
     
     def get_llm_response(self, prompt:str, format_schema:dict=None):
-        client, AnonOutput = self._require_llm()
         try:
-            response = client.chat(
+            response = self._llm_client.chat(
                 model=self.llm_model_name,
                 messages=[{"role": "user", "content": prompt}],
                 format=format_schema or AnonOutput.model_json_schema(),
@@ -114,7 +97,6 @@ class Anonymizer:
             f"Texto:\n{sentence_text.strip()}"
         )
 
-        _, AnonOutput = self._require_llm()
         schema = copy.deepcopy(AnonOutput.model_json_schema())
         schema["$defs"]["PIIEntity"]["properties"]["tipo"]["enum"] = list(
             self.list_of_undeterministics_entities
