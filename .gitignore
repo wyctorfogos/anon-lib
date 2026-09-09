@@ -13,3 +13,6 @@ venv/
 config/.env
 */.env
 data
+scripts/unsloth_compiled_cache
+.vscode
+graphify-out
