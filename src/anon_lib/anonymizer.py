@@ -4,6 +4,7 @@ import hashlib
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from anon_lib.patterns.patterns import _patterns_by_language
 from anon_lib.validators import VALIDATORS
+from anon_lib.entities import RecognizedEntity
 
 
 class Anonymizer:
@@ -89,32 +90,71 @@ class Anonymizer:
         except Exception as e:
             raise ValueError(f"Erro ao realizar o split das sentenças textuais: {e}") from e
 
+    def _scan_regex(self, text: str, owner: dict = None):
+        """Varre `text` com os padroes do idioma, em ordem de prioridade.
+
+        `owner` mapeia valor -> tipo que o capturou primeiro: o mesmo valor
+        nao muda de tipo (CPF sem pontuacao vs. telefone), mas se repete no
+        mesmo tipo em todas as posicoes.
+        """
+        owner = {} if owner is None else owner
+        entidades = []
+        # Trechos rejeitados pelo validador: padroes de menor prioridade nao
+        # podem mascarar um pedaco deles (cartao invalido virando titulo).
+        rejeitados = []
+        for pii_type, pattern in self.list_of_words_patterns.items():
+            validador = VALIDATORS.get(pii_type)
+            for match in re.finditer(pattern, text):
+                valor = match.group(0)
+                valido = validador(valor) if validador else True
+                if not valido and self.strict:
+                    rejeitados.append(match.span())
+                    continue
+                if any(match.start() < fim and inicio < match.end()
+                       for inicio, fim in rejeitados):
+                    continue
+                if owner.setdefault(valor, pii_type) != pii_type:
+                    continue
+                entidades.append(RecognizedEntity(
+                    pii_type, valor, match.start(), match.end(),
+                    1.0 if valido else 0.5,
+                ))
+        return entidades
+
     def find_keywords_and_replace(self, chunks_of_sentence_text:str=None):
         if not chunks_of_sentence_text:
             raise ValueError(f"Sem sentença a análisar.")
 
         dict_found_keywords={}
-        valores_ja_capturados=set()
+        owner={}
         for chunk in chunks_of_sentence_text:
-            # Trechos rejeitados pelo validador: padroes de menor prioridade nao
-            # podem mascarar um pedaco deles (cartao invalido virando titulo).
-            rejeitados=[]
-            for pii_type, pattern in self.list_of_words_patterns.items():
-                for match in re.finditer(pattern, chunk):
-                    valor=match.group(0)
-                    validador = VALIDATORS.get(pii_type) if self.strict else None
-                    if validador and not validador(valor):
-                        rejeitados.append(match.span())
-                        continue
-                    if any(match.start() < fim and inicio < match.end()
-                           for inicio, fim in rejeitados):
-                        continue
-                    if valor in valores_ja_capturados:
-                        continue
-                    valores_ja_capturados.add(valor)
-                    dict_found_keywords.setdefault(pii_type, set()).add(valor)
+            for e in self._scan_regex(chunk, owner):
+                dict_found_keywords.setdefault(e.type, set()).add(e.value)
         return dict_found_keywords
-    
+
+    def analyze(self, sentence_text: str, use_llm: bool = False, min_score: float = 0.0):
+        """Devolve as entidades encontradas, sem mascarar o texto.
+
+        Cada RecognizedEntity traz tipo, valor, offsets [start, end) e score.
+        Ordenadas por posicao. O regex vence o LLM em trechos sobrepostos.
+        """
+        if not sentence_text or not sentence_text.strip():
+            raise ValueError("Sem sentença a análisar.")
+        entidades = self._scan_regex(sentence_text)
+
+        if use_llm:
+            ocupados = [(e.start, e.end) for e in entidades]
+            for tipo, valores in self.find_undeterministic_entities(sentence_text).items():
+                for valor in sorted(valores):
+                    for m in re.finditer(self._value_regex(valor), sentence_text):
+                        if any(m.start() < fim and inicio < m.end() for inicio, fim in ocupados):
+                            continue
+                        entidades.append(RecognizedEntity(tipo, valor, m.start(), m.end(), 0.8))
+                        ocupados.append(m.span())
+
+        entidades = [e for e in entidades if e.score >= min_score]
+        return sorted(entidades, key=lambda e: (e.start, -e.end))
+
     def get_llm_response(self, prompt:str, format_schema:dict=None):
         _, AnonOutput = self._require_llm()
         try:
@@ -174,6 +214,13 @@ class Anonymizer:
         return tags
 
     @staticmethod
+    def _value_regex(valor: str) -> str:
+        """Regex do valor literal, com fronteira de palavra nas pontas alfanumericas."""
+        esq = r"(?<!\w)" if valor[0].isalnum() or valor[0] == "_" else ""
+        dir_ = r"(?!\w)" if valor[-1].isalnum() or valor[-1] == "_" else ""
+        return f"{esq}{re.escape(valor)}{dir_}"
+
+    @staticmethod
     def _mask(text: str, tags: dict) -> str:
         """Substitui cada valor por sua tag numa unica passagem.
 
@@ -186,24 +233,14 @@ class Anonymizer:
         if not tags:
             return text
         por_valor = {valor: tag for tag, valor in tags.items()}
-        alternativas = []
-        for valor in sorted(por_valor, key=len, reverse=True):
-            esq = r"(?<!\w)" if valor[0].isalnum() or valor[0] == "_" else ""
-            dir_ = r"(?!\w)" if valor[-1].isalnum() or valor[-1] == "_" else ""
-            alternativas.append(f"{esq}{re.escape(valor)}{dir_}")
+        alternativas = [Anonymizer._value_regex(valor)
+                        for valor in sorted(por_valor, key=len, reverse=True)]
         return re.sub("|".join(alternativas), lambda m: por_valor[m.group(0)], text)
 
-    def anonimize_text(self, sentence_text: str, use_llm: bool = False):
-        chunks = self.split_setences(sentence_text=sentence_text)
-        pii_words = self.find_keywords_and_replace(chunks_of_sentence_text=chunks)
-
-        if use_llm:
-            ja_capturados = {v for valores in pii_words.values() for v in valores}
-            for tipo, valores in self.find_undeterministic_entities(sentence_text).items():
-                novos = {v for v in valores
-                        if not any(v in j or j in v for j in ja_capturados)}
-                if novos:
-                    pii_words.setdefault(tipo, set()).update(novos)
+    def anonimize_text(self, sentence_text: str, use_llm: bool = False, min_score: float = 0.0):
+        pii_words = {}
+        for e in self.analyze(sentence_text, use_llm=use_llm, min_score=min_score):
+            pii_words.setdefault(e.type, set()).add(e.value)
 
         tags = self._build_tags(pii_words)
 

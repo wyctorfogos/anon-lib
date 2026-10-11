@@ -490,3 +490,45 @@ def test_tag_hash_estavel_entre_processos():
 def test_tag_style_invalido():
     with pytest.raises(ValueError):
         Anonymizer(tag_style="uuid")
+
+
+# --------------------------------------------------------------------------
+# analyze(): entidades com offsets e score, sem mascarar
+# --------------------------------------------------------------------------
+def test_analyze_devolve_offsets_que_recortam_o_valor(anon_ptbr):
+    texto = "Mail joao@x.com e CPF 529.982.247-25 hoje"
+    ents = anon_ptbr.analyze(texto)
+    assert [(e.type, e.value) for e in ents] == [
+        ("EMAIL", "joao@x.com"), ("CPF", "529.982.247-25")]
+    assert all(texto[e.start:e.end] == e.value for e in ents)
+    assert all(e.score == 1.0 for e in ents)
+
+
+def test_analyze_nao_altera_o_texto_e_mantem_todas_as_ocorrencias(anon_ptbr):
+    texto = "a@b.com e de novo a@b.com"
+    ents = anon_ptbr.analyze(texto)
+    assert [e.start for e in ents] == [0, texto.rindex("a@b.com")]
+
+
+def test_analyze_score_menor_para_digito_verificador_invalido(anon_ptbr):
+    ents = anon_ptbr.analyze("CPF 111.111.111-11")
+    assert [(e.type, e.score) for e in ents] == [("CPF", 0.5)]
+    assert anon_ptbr.analyze("CPF 111.111.111-11", min_score=0.9) == []
+    assert anon_ptbr.anonimize_text("CPF 111.111.111-11", min_score=0.9)[0] == "CPF 111.111.111-11"
+
+
+def test_analyze_com_llm_localiza_todas_as_ocorrencias(anon_ptbr, monkeypatch):
+    texto = "Maria falou. Mariana ouviu. Depois Maria saiu."
+    monkeypatch.setattr(
+        anon_ptbr, "get_llm_response",
+        lambda prompt, format_schema=None: _resposta_falsa({"anon_model_output": [
+            {"tipo": "PERSON_NAME", "valor": "Maria"}]}),
+    )
+    ents = anon_ptbr.analyze(texto, use_llm=True)
+    assert [(e.start, e.score) for e in ents] == [(0, 0.8), (35, 0.8)]
+    assert all(texto[e.start:e.end] == "Maria" for e in ents)
+
+
+def test_analyze_texto_vazio(anon_ptbr):
+    with pytest.raises(ValueError):
+        anon_ptbr.analyze("   ")

@@ -80,17 +80,81 @@ masked, tags = anon.anonimize_text(
 ```
 
 ```
-Meu nome é [PERSON_NAME_0], moro na [LOCATION_0], 123 e meu CPF é [CPF_0].
+Meu nome é [PERSON_NAME_0], moro na [ADDRESS_0] e meu CPF é [CPF_0].
 
-{'[CPF_0]': '111.222.333-44',
- '[PERSON_NAME_0]': 'Maria',
- '[LOCATION_0]': 'Rua das Flores'}
+{'[PERSON_NAME_0]': 'Maria',
+ '[ADDRESS_0]': 'Rua das Flores, 123',
+ '[CPF_0]': '111.222.333-44'}
 ```
 
-Note the house number `123` left unmasked: that is real output, and it illustrates why
-the regex layer is the one you rely on for guarantees.
+Names and addresses are deliberately **not** regex patterns: they are not deterministic,
+so they belong to the LLM layer. The output above comes from a small model (`qwen3:0.6b`)
+and will vary with the model; the regex layer is the one you rely on for guarantees.
 
 Run both layers end to end with `python examples/demo.py`.
+
+### Inspect before masking: `analyze()`
+
+`analyze` returns the entities with their position and a confidence score, without
+touching the text:
+
+```python
+for e in anon.analyze("Mail joao@x.com, CPF 111.222.333-44"):
+    print(e)
+```
+
+```
+RecognizedEntity(type='EMAIL', value='joao@x.com', start=5, end=15, score=1.0)
+RecognizedEntity(type='CPF', value='111.222.333-44', start=21, end=35, score=0.5)
+```
+
+`text[e.start:e.end] == e.value` always holds, and every occurrence of a value is
+reported. Entities are sorted by position. `analyze(text, use_llm=True)` merges the LLM
+entities; where regex and LLM overlap, the regex wins.
+
+| Score | Meaning |
+| --- | --- |
+| `1.0` | Regex match (with a valid check digit, for types that have one) |
+| `0.5` | Regex match whose check digit is invalid (only when `strict=False`) |
+| `0.8` | LLM entity (fixed: Ollama does not expose per-entity confidence) |
+
+`min_score` filters by score, in both `analyze` and `anonimize_text`:
+
+```python
+anon.anonimize_text(text, min_score=0.9)   # leaves invalid-check-digit CPFs alone
+```
+
+### Check-digit validation: `strict=True`
+
+By default every well-formed match is masked, which is the safe side for anonymization.
+With `strict=True`, CPF, CNPJ (numeric and alphanumeric) and credit cards (Luhn) with an
+invalid check digit are discarded, which cuts false positives:
+
+```python
+Anonymizer(strict=True).anonimize_text("CPF 111.222.333-44 e 529.982.247-25")
+# ('CPF 111.222.333-44 e [CPF_0]', {'[CPF_0]': '529.982.247-25'})
+```
+
+A rejected span also blocks lower-priority patterns from masking a piece of it (an
+invalid card number is not re-read as a voter ID). The trade-off: a real CPF typed with
+a mistake is no longer masked, so keep `strict=False` if a leak is worse than a false
+positive. The validators are also importable from `anon_lib.validators`.
+
+### Stable tags: `tag_style="hash"`
+
+The default `[CPF_0]` is positional: the index depends on the other values in the text,
+so the same CPF can get different tags in different texts. `tag_style="hash"` derives
+the tag from the value instead:
+
+```python
+Anonymizer(tag_style="hash").anonimize_text("CPF 529.982.247-25")
+# ('CPF [CPF_e0897535]', {'[CPF_e0897535]': '529.982.247-25'})
+```
+
+The same value gets the same tag in any text and any process, so documents can be
+correlated. The hash is an unkeyed SHA-256 prefix: for small value spaces (a CPF has
+about 10⁹ possibilities) it can be brute-forced, so treat the tag mapping as sensitive
+if the masked text leaves your organization.
 
 ## Detected patterns
 
@@ -102,7 +166,7 @@ Run both layers end to end with `python examples/demo.py`.
 
 **en** — `EMAIL`, `SSN`, `CREDIT_CARD`, `CREDIT_CARD_AMEX`, `US_PHONE`, `US_ZIP`, `IP`
 
-**LLM entity types** — `PERSON_NAME`, `LOCATION`, `ORGANIZATION`, `DATE`, `AGE`,
+**LLM entity types** — `PERSON_NAME`, `ADDRESS`, `LOCATION`, `ORGANIZATION`, `DATE`, `AGE`,
 `TIME`, `MONEY`, `PERCENT`, `FACILITY`, `GPE` (configurable via
 `list_of_undeterministics_entities`; the list is injected into the response schema as an
 enum, so the model cannot return a type outside it).
@@ -113,8 +177,13 @@ enum, so the model cannot return a type outside it).
 are both a CPF and a mobile number. The first pattern declared wins, so formatted
 patterns come first and ambiguous bare numerics last.
 
-**Longest value is replaced first.** The leading 12 digits of a spaced credit card also
-match a voter ID. Replacing the shorter value first would corrupt the longer one.
+**Longest value is replaced first, in a single pass.** The leading 12 digits of a spaced
+credit card also match a voter ID. Replacing the shorter value first would corrupt the
+longer one, and a single pass guarantees an inserted tag is never masked again.
+
+**Values match on word boundaries.** `Ana` is masked in `Ana foi`, not inside `Mariana`.
+Values that start or end with a symbol, such as `(27) 99999-8888`, get no boundary on
+that side.
 
 **Label-anchored patterns include the label.** `CNH`, `AGENCIA` and `CONTA_BANCARIA` mask
 the label too (`CNH: 12345678901` → `[CNH_0]`), because the bare number is
@@ -125,8 +194,9 @@ produce a no-op substitution while making the output *look* anonymized.
 
 ## Known limitations
 
-- **No check-digit validation.** A well-formed but arithmetically invalid CPF is still
-  masked. For anonymization, over-detection is the safe side.
+- **Check digits are opt-in.** Without `strict=True`, a well-formed but arithmetically
+  invalid CPF is still masked (over-detection is the safe side). `RG`, `PIS_PASEP` and
+  `TITULO_ELEITOR` have no validator yet.
 - **`DATA` matches any `dd/mm/aaaa` date**, with no way to tell a birth date from any
   other. Distinguishing them requires context, which is the LLM layer's job.
 - **`US_ZIP` matches any 5-digit number**, and bare 11-digit runs are inherently
@@ -135,6 +205,8 @@ produce a no-op substitution while making the output *look* anonymized.
   `list_of_undeterministics_entities` for your use case — the list is injected into the
   response schema as an enum, so it is the effective control over what the model may
   return.
+- **Positional tags are not stable across texts.** Use `tag_style="hash"` if you need to
+  correlate documents.
 - **Tag numbering may skip an index.** When a short value is also a substring of a longer
   masked one, it stays registered to catch standalone occurrences elsewhere. Dropping it
   would leak PII.
@@ -143,8 +215,9 @@ produce a no-op substitution while making the output *look* anonymized.
 
 ```bash
 pip install -e ".[dev]"   # needs Python 3.9+, as declared in pyproject.toml
-pytest        # 53 tests, hermetic: no server, no network (~2s)
+pytest        # 74 tests, hermetic: no server, no network (~3s)
 pytest -m llm # 3 prompt-regression tests against a real Ollama
+LLM_MODEL_NAME=qwen3:0.6b pytest -m llm   # pick the installed model
 ```
 
 The default suite stubs every LLM response, so it needs no server. The `llm` marker is
@@ -155,8 +228,10 @@ or the model is unavailable.
 ## Layout
 
 ```text
-src/anon_lib/__init__.py                 public API: Anonymizer, __version__
+src/anon_lib/__init__.py                 public API: Anonymizer, RecognizedEntity, __version__
 src/anon_lib/anonymizer.py               Anonymizer
+src/anon_lib/entities.py                 RecognizedEntity (type, value, start, end, score)
+src/anon_lib/validators.py               CPF / CNPJ / Luhn check digits
 src/anon_lib/patterns/patterns.py        regex pattern tables, per language
 src/anon_lib/schemas/models_schemas.py   AnonOutput / PIIEntity (LLM response schema)
 examples/demo.py                         runnable demo of both layers
