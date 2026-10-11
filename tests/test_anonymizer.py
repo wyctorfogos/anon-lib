@@ -1,3 +1,4 @@
+import re
 import json
 import os
 import subprocess
@@ -169,6 +170,29 @@ def test_valor_curto_contido_em_valor_longo_nao_vaza_isolado(anon_ptbr):
     """O número da CNH rotulada também aparece solto: as duas ocorrências somem."""
     saida = mascarar(anon_ptbr, "CNH: 12345678901 e de novo 12345678901 aqui")
     assert "12345678901" not in saida
+
+
+def test_valor_nao_e_mascarado_dentro_de_outra_palavra(anon_ptbr):
+    """'Ana' (via LLM) nao pode mascarar o trecho de 'Mariana'."""
+    mascarado = anon_ptbr._mask("Ana e Mariana foram.", {"[PERSON_NAME_0]": "Ana"})
+    assert mascarado == "[PERSON_NAME_0] e Mariana foram."
+
+
+def test_mascara_nao_reprocessa_tag_ja_inserida(anon_ptbr):
+    tags = {"[CPF_0]": "111.222.333-44", "[X_0]": "CPF"}
+    assert anon_ptbr._mask("CPF 111.222.333-44", tags) == "[X_0] [CPF_0]"
+
+
+def test_import_do_pacote_nao_exige_ollama():
+    codigo = (
+        "import sys; sys.modules['ollama']=None;"
+        "from anon_lib import Anonymizer;"
+        "a=Anonymizer(language='en');"
+        "print(a.anonimize_text('mail a@b.com')[0])"
+    )
+    saida = subprocess.run([sys.executable, "-c", codigo], capture_output=True, text=True)
+    assert saida.returncode == 0, saida.stderr
+    assert "[EMAIL_0]" in saida.stdout
 
 
 # --------------------------------------------------------------------------
@@ -356,8 +380,7 @@ def anon_llm():
     modelo = os.getenv("LLM_MODEL_NAME")
     anon = Anonymizer(**({"llm_model_name": modelo} if modelo else {}))
     try:
-        client, _ = anon._require_llm()
-        client.show(anon.llm_model_name)
+        anon._llm_client.show(anon.llm_model_name)
     except Exception as e:
         pytest.skip(f"Ollama indisponivel ou modelo ausente: {e}")
     return anon
@@ -405,3 +428,65 @@ if __name__ == "__main__":
     # Sem isto, rodar o arquivo direto apenas definiria as funções e sairia sem
     # executar nada: fixtures e parametrize só têm efeito sob o pytest.
     raise SystemExit(pytest.main([__file__, "-v"]))
+
+
+# --------------------------------------------------------------------------
+# strict=True: validacao por digito verificador
+# --------------------------------------------------------------------------
+@pytest.mark.parametrize("texto,esperado", [
+    ("CPF 529.982.247-25", "CPF [CPF_0]"),
+    ("CPF 111.111.111-11", "CPF 111.111.111-11"),
+    ("CPF 529.982.247-26", "CPF 529.982.247-26"),
+    ("CNPJ 11.222.333/0001-81", "CNPJ [CNPJ_NUMERICO_FORMATADO_0]"),
+    ("CNPJ 11.222.333/0001-82", "CNPJ 11.222.333/0001-82"),
+    ("Cartao 4111 1111 1111 1111", "Cartao [CARTAO_CREDITO_0]"),
+    ("Cartao 4111 1111 1111 1112", "Cartao 4111 1111 1111 1112"),
+])
+def test_strict_valida_digito_verificador(texto, esperado):
+    a = Anonymizer(language="pt-br", strict=True)
+    assert a.anonimize_text(texto)[0] == esperado
+
+
+def test_nao_strict_mantem_comportamento_so_regex(anon_ptbr):
+    assert mascarar(anon_ptbr, "CPF 111.111.111-11") == "CPF [CPF_0]"
+
+
+def test_validadores_cnpj_alfanumerico():
+    from anon_lib.validators import cnpj_validate
+    assert cnpj_validate("12.ABC.345/01DE-35")
+    assert not cnpj_validate("12.ABC.345/01DE-36")
+
+
+def test_address_esta_entre_os_tipos_do_llm(anon_ptbr):
+    assert "ADDRESS" in anon_ptbr.list_of_undeterministics_entities
+
+
+# --------------------------------------------------------------------------
+# tag_style="hash": tag derivada do valor
+# --------------------------------------------------------------------------
+def test_tag_hash_e_igual_entre_textos_diferentes():
+    a = Anonymizer(language="pt-br", tag_style="hash")
+    m1, t1 = a.anonimize_text("CPF 529.982.247-25")
+    m2, t2 = a.anonimize_text("outro texto com 111.222.333-44 e CPF 529.982.247-25")
+    tag = next(k for k, v in t1.items() if v == "529.982.247-25")
+    assert tag in m1 and tag in m2 and t2[tag] == "529.982.247-25"
+    assert re.fullmatch(r"\[CPF_[0-9a-f]{8}\]", tag)
+
+
+def test_tag_hash_estavel_entre_processos():
+    codigo = (
+        "from anon_lib import Anonymizer;"
+        "print(Anonymizer(language='pt-br', tag_style='hash')"
+        ".anonimize_text('CPF 529.982.247-25')[0])"
+    )
+    saidas = {
+        subprocess.run([sys.executable, "-c", codigo], capture_output=True, text=True,
+                       env={**os.environ, "PYTHONHASHSEED": str(seed)}).stdout
+        for seed in (1, 2)
+    }
+    assert len(saidas) == 1
+
+
+def test_tag_style_invalido():
+    with pytest.raises(ValueError):
+        Anonymizer(tag_style="uuid")

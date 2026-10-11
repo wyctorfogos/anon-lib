@@ -31,7 +31,7 @@ classifiers = [
 dependencies = ["langchain-text-splitters>=0.2"]
 
 [project.optional-dependencies]
-# Carregados sob demanda em Anonymizer._require_llm(), so no modo use_llm=True.
+# Carregados sob demanda, so no modo use_llm=True.
 llm = ["ollama>=0.3", "pydantic>=2"]
 dev = ["pytest>=7", "python-dotenv", "anon-lib[llm]"]
 

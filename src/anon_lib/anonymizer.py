@@ -1,24 +1,35 @@
 import re
-import os
 import copy
+import hashlib
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from anon_lib.patterns.patterns import _patterns_by_language
+from anon_lib.validators import VALIDATORS
 import ollama
 from anon_lib.schemas.models_schemas import AnonOutput
-
 class Anonymizer:
     def __init__(self,
             llm_model_name:str="hf.co/empero-ai/Qwen3.8-4B-Distill-GGUF:Q4_K_M",
             llm_ipaddress_service:str="http://localhost:11434",
-            language="pt-br"
+            language="pt-br",
+            strict:bool=False,
+            tag_style:str="index"
         ):
         self.llm_model_name=llm_model_name
         self.llm_ipaddress_service=llm_ipaddress_service
-        self._llm_client = ollama.Client(host=self.llm_ipaddress_service)
+        self._llm_client_instance = None
         self.language=language
+        # strict=True: descarta matches com digito verificador invalido (CPF, CNPJ,
+        # cartao/Luhn); o valor cai para o proximo padrao da lista, se houver.
+        self.strict=strict
+        # tag_style="index": [CPF_0], posicional (muda conforme os outros valores do texto).
+        # tag_style="hash":  [CPF_a1b2c3d4], derivada do valor; o mesmo valor recebe a
+        # mesma tag em qualquer texto e em qualquer processo.
+        if tag_style not in ("index", "hash"):
+            raise ValueError("tag_style deve ser 'index' ou 'hash'.")
+        self.tag_style=tag_style
         self._patterns_by_language=_patterns_by_language
         self.list_of_undeterministics_entities = [
-            "PERSON_NAME", "LOCATION", "ORGANIZATION", 
+            "PERSON_NAME", "ADDRESS", "LOCATION", "ORGANIZATION", 
             "DATE", "AGE",
             "TIME", "MONEY", "PERCENT", "FACILITY", "GPE"
         ]
@@ -36,6 +47,12 @@ class Anonymizer:
             "- Capture idades expressas como número seguido de 'anos' "
             "(ex: '35 anos', 'com 12 anos') como entidade do tipo AGE."
         )
+
+    @property
+    def _llm_client(self):
+        if self._llm_client_instance is None:
+            self._llm_client_instance = ollama.Client(host=self.llm_ipaddress_service)
+        return self._llm_client_instance
 
     @property
     def list_of_words_patterns(self):
@@ -66,9 +83,19 @@ class Anonymizer:
         dict_found_keywords={}
         valores_ja_capturados=set()
         for chunk in chunks_of_sentence_text:
+            # Trechos rejeitados pelo validador: padroes de menor prioridade nao
+            # podem mascarar um pedaco deles (cartao invalido virando titulo).
+            rejeitados=[]
             for pii_type, pattern in self.list_of_words_patterns.items():
                 for match in re.finditer(pattern, chunk):
                     valor=match.group(0)
+                    validador = VALIDATORS.get(pii_type) if self.strict else None
+                    if validador and not validador(valor):
+                        rejeitados.append(match.span())
+                        continue
+                    if any(match.start() < fim and inicio < match.end()
+                           for inicio, fim in rejeitados):
+                        continue
                     if valor in valores_ja_capturados:
                         continue
                     valores_ja_capturados.add(valor)
@@ -117,6 +144,40 @@ class Anonymizer:
                 entidades.setdefault(entidade.tipo, set()).add(entidade.valor)
         return entidades
             
+    def _build_tags(self, pii_words: dict) -> dict:
+        tags = {}
+        for tipo, valores in pii_words.items():
+            for i, valor in enumerate(sorted(valores)):
+                if self.tag_style == "index":
+                    tags[f"[{tipo}_{i}]"] = valor
+                    continue
+                digest = hashlib.sha256(valor.encode("utf-8")).hexdigest()
+                tamanho = 8
+                while f"[{tipo}_{digest[:tamanho]}]" in tags:  # colisao: alonga
+                    tamanho += 4
+                tags[f"[{tipo}_{digest[:tamanho]}]"] = valor
+        return tags
+
+    @staticmethod
+    def _mask(text: str, tags: dict) -> str:
+        """Substitui cada valor por sua tag numa unica passagem.
+
+        Valores que comecam/terminam em caractere de palavra so casam em
+        fronteira de palavra ("Ana" nao mascara dentro de "Mariana"). A
+        alternancia em ordem decrescente de tamanho faz o valor mais longo
+        vencer, e a passagem unica impede de mascarar o texto de uma tag ja
+        inserida.
+        """
+        if not tags:
+            return text
+        por_valor = {valor: tag for tag, valor in tags.items()}
+        alternativas = []
+        for valor in sorted(por_valor, key=len, reverse=True):
+            esq = r"(?<!\w)" if valor[0].isalnum() or valor[0] == "_" else ""
+            dir_ = r"(?!\w)" if valor[-1].isalnum() or valor[-1] == "_" else ""
+            alternativas.append(f"{esq}{re.escape(valor)}{dir_}")
+        return re.sub("|".join(alternativas), lambda m: por_valor[m.group(0)], text)
+
     def anonimize_text(self, sentence_text: str, use_llm: bool = False):
         chunks = self.split_setences(sentence_text=sentence_text)
         pii_words = self.find_keywords_and_replace(chunks_of_sentence_text=chunks)
@@ -129,14 +190,8 @@ class Anonymizer:
                 if novos:
                     pii_words.setdefault(tipo, set()).update(novos)
 
-        tags = {
-            f"[{tipo}_{i}]": valor
-            for tipo, valores in pii_words.items()
-            for i, valor in enumerate(sorted(valores))
-        }
+        tags = self._build_tags(pii_words)
 
-        masked_text = sentence_text
-        for tag, valor in sorted(tags.items(), key=lambda kv: len(kv[1]), reverse=True):
-            masked_text = masked_text.replace(valor, tag)
+        masked_text = self._mask(sentence_text, tags)
 
         return masked_text, {t: v for t, v in tags.items() if t in masked_text}

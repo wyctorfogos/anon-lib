@@ -1,14 +1,6 @@
-"""Demonstracao das duas camadas do anon-lib.
-
-    python examples/demo.py
-
-A camada LLM precisa de um Ollama no ar e do extra: pip install anon-lib[llm]
-"""
 import os
 import sys
 
-# Com o pacote instalado (pip install anon-lib) o import abaixo ja funciona.
-# Este bloco cobre o uso direto do repositorio, sem instalar.
 _RAIZ = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _SRC = os.path.join(_RAIZ, "src")
 if os.path.isdir(_SRC) and _SRC not in sys.path:
