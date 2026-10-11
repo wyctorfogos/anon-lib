@@ -4,8 +4,8 @@ import hashlib
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from anon_lib.patterns.patterns import _patterns_by_language
 from anon_lib.validators import VALIDATORS
-import ollama
-from anon_lib.schemas.models_schemas import AnonOutput
+
+
 class Anonymizer:
     def __init__(self,
             llm_model_name:str="hf.co/empero-ai/Qwen3.8-4B-Distill-GGUF:Q4_K_M",
@@ -48,9 +48,22 @@ class Anonymizer:
             "(ex: '35 anos', 'com 12 anos') como entidade do tipo AGE."
         )
 
+    @staticmethod
+    def _require_llm():
+        """Importa ollama/pydantic sob demanda: so o modo use_llm=True precisa deles."""
+        try:
+            import ollama
+            from anon_lib.schemas.models_schemas import AnonOutput
+        except ImportError as e:
+            raise ImportError(
+                "O modo LLM requer dependencias opcionais: pip install 'anon-lib[llm]'"
+            ) from e
+        return ollama, AnonOutput
+
     @property
     def _llm_client(self):
         if self._llm_client_instance is None:
+            ollama, _ = self._require_llm()
             self._llm_client_instance = ollama.Client(host=self.llm_ipaddress_service)
         return self._llm_client_instance
 
@@ -103,6 +116,7 @@ class Anonymizer:
         return dict_found_keywords
     
     def get_llm_response(self, prompt:str, format_schema:dict=None):
+        _, AnonOutput = self._require_llm()
         try:
             response = self._llm_client.chat(
                 model=self.llm_model_name,
@@ -115,6 +129,7 @@ class Anonymizer:
             raise ValueError(f"Erro ao obter resposta do LLM: {e}") from e
         
     def find_undeterministic_entities(self, sentence_text:str):
+        _, AnonOutput = self._require_llm()
         prompt = (
             f"{self.prompt}\n\n"
             f"Tipos de entidade a procurar:\n"
