@@ -238,7 +238,7 @@ or the model is unavailable.
 ## Layout
 
 ```text
-src/anon_lib/__init__.py                 public API: Anonymizer, RecognizedEntity, __version__
+src/anon_lib/__init__.py                 public API: Anonymizer, RecognizedEntity
 src/anon_lib/anonymizer.py               Anonymizer
 src/anon_lib/entities.py                 RecognizedEntity (type, value, start, end, score)
 src/anon_lib/validators.py               CPF / CNPJ / Luhn check digits

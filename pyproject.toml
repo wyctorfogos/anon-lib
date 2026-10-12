@@ -1,10 +1,10 @@
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling", "hatch-vcs"]
 build-backend = "hatchling.build"
 
 [project]
 name = "anon-lib"
-dynamic = ["version"]                 # fonte unica: __version__ em src/anon_lib/__init__.py
+dynamic = ["version"]                 # fonte unica: a tag git (hatch-vcs)
 description = "PII detection and masking for Brazilian Portuguese and English"
 readme = "README.md"
 requires-python = ">=3.8.13"
@@ -40,7 +40,7 @@ Homepage = "https://github.com/wyctorfogos/anon-lib"
 Issues = "https://github.com/wyctorfogos/anon-lib/issues"
 
 [tool.hatch.version]
-path = "src/anon_lib/__init__.py"
+source = "vcs"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/anon_lib"]
