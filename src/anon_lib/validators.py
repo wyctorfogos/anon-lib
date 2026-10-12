@@ -45,7 +45,53 @@ def cnpj_validate(valor: str) -> bool:
     return True
 
 
+def _luhn_digits(valor: str, tamanho: int) -> bool:
+    d = re.sub(r"\D", "", valor)
+    if len(d) != tamanho:
+        return False
+    soma = 0
+    for i, ch in enumerate(reversed(d)):
+        n = int(ch)
+        if i % 2 == 1:
+            n *= 2
+            if n > 9:
+                n -= 9
+        soma += n
+    return soma % 10 == 0
+
+
+def siren_validate(valor: str) -> bool:
+    return _luhn_digits(valor, 9)
+
+
+def siret_validate(valor: str) -> bool:
+    return _luhn_digits(valor, 14)
+
+
+def nir_validate(valor: str) -> bool:
+    """NIR (15 posicoes): chave = 97 - (13 primeiras mod 97); Corse 2A/2B -> 19/18."""
+    c = _alnum(valor).replace("2A", "19").replace("2B", "18")
+    if len(c) != 15 or not c.isdigit():
+        return False
+    return 97 - int(c[:13]) % 97 == int(c[13:])
+
+
+def iban_validate(valor: str) -> bool:
+    c = _alnum(valor)
+    if len(c) != 27 or not c.startswith("FR"):
+        return False
+    rearranjado = c[4:] + c[:4]
+    numerico = "".join(str(int(ch, 36)) for ch in rearranjado)
+    return int(numerico) % 97 == 1
+
+
 VALIDATORS = {
+    "SIREN": siren_validate,
+    "SIRET": siret_validate,
+    "NIR": nir_validate,
+    "IBAN_FR": iban_validate,
+    "CARTE_BANCAIRE": luhn_check,
+    "CARTE_BANCAIRE_AMEX": luhn_check,
     "CPF": cpf_validate,
     "CNPJ_NUMERICO_FORMATADO": cnpj_validate,
     "CNPJ_ALFANUMERICO": cnpj_validate,

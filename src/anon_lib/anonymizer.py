@@ -13,7 +13,9 @@ class Anonymizer:
             llm_ipaddress_service:str="http://localhost:11434",
             language="pt-br",
             strict:bool=False,
-            tag_style:str="index"
+            tag_style:str="index",
+            deny_list=None,
+            deny_list_ignore_case:bool=True
         ):
         self.llm_model_name=llm_model_name
         self.llm_ipaddress_service=llm_ipaddress_service
@@ -29,6 +31,11 @@ class Anonymizer:
             raise ValueError("tag_style deve ser 'index' ou 'hash'.")
         self.tag_style=tag_style
         self._patterns_by_language=_patterns_by_language
+        # deny_list: termos sensiveis proprios do usuario. Aceita uma lista de
+        # termos (tipo "DENY_LIST") ou {tipo: [termos]}. Tem prioridade sobre
+        # os padroes regex: um trecho coberto por ela nao e reanalisado.
+        self.deny_list_ignore_case=deny_list_ignore_case
+        self._deny_patterns=self._compile_deny_list(deny_list)
         self.list_of_undeterministics_entities = [
             "PERSON_NAME", "ADDRESS", "LOCATION", "ORGANIZATION", 
             "DATE", "AGE",
@@ -90,6 +97,22 @@ class Anonymizer:
         except Exception as e:
             raise ValueError(f"Erro ao realizar o split das sentenças textuais: {e}") from e
 
+    def _compile_deny_list(self, deny_list) -> list:
+        if not deny_list:
+            return []
+        if not isinstance(deny_list, dict):
+            deny_list = {"DENY_LIST": deny_list}
+        flags = re.IGNORECASE if self.deny_list_ignore_case else 0
+        compiladas = []
+        for tipo, termos in deny_list.items():
+            if isinstance(termos, str):
+                raise ValueError(f"deny_list['{tipo}'] deve ser uma lista de termos, nao uma string.")
+            termos = sorted({t.strip() for t in termos if t and t.strip()}, key=len, reverse=True)
+            if termos:
+                alternativas = "|".join(self._value_regex(t) for t in termos)
+                compiladas.append((tipo, re.compile(alternativas, flags)))
+        return compiladas
+
     def _scan_regex(self, text: str, owner: dict = None):
         """Varre `text` com os padroes do idioma, em ordem de prioridade.
 
@@ -102,6 +125,19 @@ class Anonymizer:
         # Trechos rejeitados pelo validador: padroes de menor prioridade nao
         # podem mascarar um pedaco deles (cartao invalido virando titulo).
         rejeitados = []
+        # Trechos ja capturados pela deny-list (prioridade maxima).
+        ocupados = []
+        for pii_type, padrao in self._deny_patterns:
+            for match in padrao.finditer(text):
+                if any(match.start() < fim and inicio < match.end()
+                       for inicio, fim in ocupados):
+                    continue
+                valor = match.group(0)
+                if owner.setdefault(valor, pii_type) != pii_type:
+                    continue
+                entidades.append(RecognizedEntity(
+                    pii_type, valor, match.start(), match.end(), 1.0))
+                ocupados.append(match.span())
         for pii_type, pattern in self.list_of_words_patterns.items():
             validador = VALIDATORS.get(pii_type)
             for match in re.finditer(pattern, text):
@@ -111,7 +147,7 @@ class Anonymizer:
                     rejeitados.append(match.span())
                     continue
                 if any(match.start() < fim and inicio < match.end()
-                       for inicio, fim in rejeitados):
+                       for inicio, fim in rejeitados + ocupados):
                     continue
                 if owner.setdefault(valor, pii_type) != pii_type:
                     continue

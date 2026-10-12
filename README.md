@@ -164,6 +164,16 @@ if the masked text leaves your organization.
 `CARTAO_CREDITO`, `CARTAO_CREDITO_AMEX`, `CHAVE_PIX_ALEATORIA`, `AGENCIA`,
 `CONTA_BANCARIA`, `IP`
 
+**Deny-list** — your own sensitive terms, checked before the regex layer:
+
+```python
+anon = Anonymizer(language="en", deny_list=["Project Aurora"])               # type DENY_LIST
+anon = Anonymizer(language="en", deny_list={"CODENAME": ["Aurora", "Zeus"]}, # custom type
+                  deny_list_ignore_case=False)                               # default: True
+```
+
+**fr** — `EMAIL`, `IBAN_FR`, `NIR`, `SIRET`, `SIREN`, `CARTE_BANCAIRE`, `CARTE_BANCAIRE_AMEX`, `IP`, `DATE`, `CARTE_IDENTITE`, `TELEPHONE_FR`, `CODE_POSTAL` (IBAN, NIR, SIRET, SIREN and cards are checksum-validated)
+
 **en** — `EMAIL`, `SSN`, `CREDIT_CARD`, `CREDIT_CARD_AMEX`, `US_PHONE`, `US_ZIP`, `IP`
 
 **LLM entity types** — `PERSON_NAME`, `ADDRESS`, `LOCATION`, `ORGANIZATION`, `DATE`, `AGE`,

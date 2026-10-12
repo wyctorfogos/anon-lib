@@ -26,6 +26,16 @@ def anon_en():
     return Anonymizer(language="en")
 
 
+@pytest.fixture(scope="module")
+def anon_fr():
+    return Anonymizer(language="fr")
+
+
+@pytest.fixture(scope="module")
+def anon_fr_strict():
+    return Anonymizer(language="fr", strict=True)
+
+
 def mascarar(anon, texto, **kwargs):
     """anonimize_text devolve (texto_mascarado, tags); aqui interessa so o texto."""
     return anon.anonimize_text(texto, **kwargs)[0]
@@ -77,6 +87,46 @@ CASOS_EN = [
 @pytest.mark.parametrize("texto,esperado", CASOS_EN)
 def test_padroes_en(anon_en, texto, esperado):
     assert mascarar(anon_en, texto) == esperado
+
+
+CASOS_FR = [
+    ("Mail: jean.dupont@exemple.fr", "Mail: [EMAIL_0]"),
+    ("IBAN FR14 2004 1010 0505 0001 3M02 606", "IBAN [IBAN_FR_0]"),
+    ("IBAN FR1420041010050500013M02606", "IBAN [IBAN_FR_0]"),
+    ("NIR 1 85 05 78 006 084 91", "NIR [NIR_0]"),
+    ("NIR 185057800608491", "NIR [NIR_0]"),
+    ("SIRET 732 829 320 00074", "SIRET [SIRET_0]"),
+    ("SIRET 73282932000074", "SIRET [SIRET_0]"),
+    ("SIREN 732 829 320", "SIREN [SIREN_0]"),
+    ("Carte 4111 1111 1111 1111", "Carte [CARTE_BANCAIRE_0]"),
+    ("Serveur 192.168.0.14", "Serveur [IP_0]"),
+    ("Né le 05/09/1990", "Né le [DATE_0]"),
+    ("CNI : 123456789012", "[CARTE_IDENTITE_0]"),
+    ("Tél 01 23 45 67 89", "Tél [TELEPHONE_FR_0]"),
+    ("Tél 06.12.34.56.78", "Tél [TELEPHONE_FR_0]"),
+    ("Tél +33 6 12 34 56 78", "Tél [TELEPHONE_FR_0]"),
+    ("Tél 0612345678", "Tél [TELEPHONE_FR_0]"),
+    ("Paris 75008", "Paris [CODE_POSTAL_0]"),
+]
+
+
+@pytest.mark.parametrize("texto,esperado", CASOS_FR)
+def test_padroes_fr(anon_fr, texto, esperado):
+    assert mascarar(anon_fr, texto) == esperado
+
+
+def test_fr_strict_rejeita_checksum_invalido(anon_fr_strict):
+    anon_fr = anon_fr_strict
+    # chave NIR, SIRET e IBAN errados nao sao mascarados como tal
+    assert "[NIR_" not in mascarar(anon_fr, "NIR 185057800608400")
+    assert "[SIRET_" not in mascarar(anon_fr, "SIRET 73282932000075")
+    assert "[IBAN_FR_" not in mascarar(anon_fr, "IBAN FR1420041010050500013M02607")
+
+
+def test_nir_corse(anon_fr):
+    base = int("1850519" + "006084")  # 2A -> 19
+    nir = f"1850 52A 006 084 {97 - base % 97:02d}".replace("1850 52A", "185 05 2A")
+    assert mascarar(anon_fr, f"NIR {nir}") == "NIR [NIR_0]"
 
 
 def test_telefone_en_preserva_pontuacao_de_abertura(anon_en):
@@ -224,7 +274,7 @@ def test_multiplos_valores_do_mesmo_tipo_recebem_tags_distintas(anon_ptbr):
 
 
 def test_idioma_nao_suportado(anon_ptbr):
-    anon = Anonymizer(language="fr")
+    anon = Anonymizer(language="de")
     with pytest.raises(ValueError, match="não suportado"):
         mascarar(anon, "texto qualquer")
 
@@ -532,3 +582,38 @@ def test_analyze_com_llm_localiza_todas_as_ocorrencias(anon_ptbr, monkeypatch):
 def test_analyze_texto_vazio(anon_ptbr):
     with pytest.raises(ValueError):
         anon_ptbr.analyze("   ")
+
+
+# --------------------------------------------------------------------------
+# Deny-list
+# --------------------------------------------------------------------------
+def test_deny_list_lista_simples():
+    anon = Anonymizer(language="pt-br", deny_list=["Projeto Aurora"])
+    assert mascarar(anon, "Falamos do projeto aurora ontem") == "Falamos do [DENY_LIST_0] ontem"
+
+
+def test_deny_list_por_tipo_e_case_sensitive():
+    anon = Anonymizer(language="pt-br", deny_list={"CODINOME": ["Aurora"]},
+                      deny_list_ignore_case=False)
+    assert mascarar(anon, "Aurora e aurora") == "[CODINOME_0] e aurora"
+
+
+def test_deny_list_respeita_fronteira_de_palavra():
+    anon = Anonymizer(language="pt-br", deny_list={"NOME": ["Ana"]})
+    assert mascarar(anon, "Ana e Mariana") == "[NOME_0] e Mariana"
+
+
+def test_deny_list_tem_prioridade_sobre_regex():
+    anon = Anonymizer(language="pt-br", deny_list={"INTERNO": ["12345678901"]})
+    assert mascarar(anon, "ID 12345678901") == "ID [INTERNO_0]"
+
+
+def test_deny_list_entra_no_analyze_com_score_1():
+    anon = Anonymizer(language="en", deny_list=["Acme"])
+    (e,) = anon.analyze("Work at Acme")
+    assert (e.type, e.value, e.start, e.end, e.score) == ("DENY_LIST", "Acme", 8, 12, 1.0)
+
+
+def test_deny_list_rejeita_string_solta():
+    with pytest.raises(ValueError, match="lista de termos"):
+        Anonymizer(deny_list={"X": "Acme"})
